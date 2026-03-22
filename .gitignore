@@ -1,0 +1,13 @@
+# DEM folders and large raster files
+dem/
+*.tif
+
+# Temporary scripts and logs
+test_api.py
+response.txt
+urls.txt
+urls2.txt
+
+# Python cache
+__pycache__/
+*.pyc
