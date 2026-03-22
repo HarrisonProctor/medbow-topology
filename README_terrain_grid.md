@@ -1,9 +1,9 @@
 # Snowy Range Terrain Grid Generator — Setup Guide
 
 ## What this does
-Generates a CSV of ~100m terrain grid cells covering the Medicine Bow / Snowy Range
+Generates a CSV of 500m terrain grid cells covering the Medicine Bow / Snowy Range
 above the Colorado border. Each cell has elevation, slope, aspect, and avalanche
-risk flags. 
+risk flags. It also supports merging with SNOTEL data to create a composite risk score. 
 
 ## Step 1: Install dependencies
 
@@ -52,16 +52,15 @@ python3 generate_terrain_grid.py \
     --output snowy_range_terrain_grid.csv
 ```
 
-### Optional flags:
+## Step 4: Merge SNOTEL Weather Data
+
+To calculate the `composite_risk_score` incorporating live weather trends (avalanche risk due to wind, new snow, or warming), run the `merge_risk.py` script:
+
 ```bash
---cell-size 100    # Grid cell size in meters (default: 100)
---cell-size 50     # Higher resolution, ~4x more cells
---cell-size 200    # Lower resolution, ~4x fewer cells
---min-elev 9500    # Minimum elevation in feet (default: 9500)
---min-elev 8500    # Include more lower-elevation terrain
+python3 merge_risk.py --csv snowy_range_terrain_grid.csv --json brooklyn_lake_snotel.json --output final_snowy_range_ontology.csv
 ```
 
-## Step 4: Check the output
+## Step 5: Check the output
 
 The script prints a summary. You should see something like:
 ```
@@ -72,18 +71,22 @@ Avalanche terrain:  ~15-25% of cells
 
 ## Column Reference
 
-| Column           | Type    | Description                                      |
-|------------------|---------|--------------------------------------------------|
-| cell_id          | STRING  | Unique ID (e.g., MBR-000001). Primary key.       |
-| lat              | DOUBLE  | Latitude of cell center                          |
-| lon              | DOUBLE  | Longitude of cell center                         |
-| elevation_ft     | DOUBLE  | Elevation in feet                                |
-| slope_deg        | DOUBLE  | Slope angle in degrees                           |
-| aspect_deg       | DOUBLE  | Aspect in degrees (0=N, 90=E, 180=S, 270=W)     |
-| aspect_cardinal  | STRING  | 8-point cardinal direction (N, NE, E, SE, etc.)  |
-| elevation_band   | STRING  | below_treeline / near_treeline / above_treeline  |
-| avy_slope        | BOOLEAN | True if slope is 30-45° (prime avalanche angle)  |
-| north_facing     | BOOLEAN | True if aspect is N, NE, or NW                   |
+| Column                 | Type    | Description                                      |
+|------------------------|---------|--------------------------------------------------|
+| cell_id                | STRING  | Unique ID (e.g., MBR-000001). Primary key.       |
+| lat                    | DOUBLE  | Latitude of cell center                          |
+| lon                    | DOUBLE  | Longitude of cell center                         |
+| elevation_ft           | DOUBLE  | Elevation in feet                                |
+| slope_deg              | DOUBLE  | Slope angle in degrees                           |
+| aspect_deg             | DOUBLE  | Aspect in degrees (0=N, 90=E, 180=S, 270=W)      |
+| aspect_cardinal        | STRING  | 8-point cardinal direction (N, NE, E, SE, etc.)  |
+| elevation_band         | STRING  | below_treeline / near_treeline / above_treeline  |
+| avy_slope              | BOOLEAN | True if slope is 30-45° (prime avalanche angle)  |
+| north_facing           | BOOLEAN | True if aspect is N, NE, or NW                   |
+| terrain_risk_score     | INTEGER | Base avalanche risk score based on terrain alone |
+| geopoint               | STRING  | "lat,lon" format for Palantir maps               |
+| geoshape               | STRING  | GeoJSON Polygon of the grid cell                 |
+| composite_risk_score   | INTEGER | Final score (terrain + weather) (merge_risk.py)  |
 
 ## Troubleshooting
 
