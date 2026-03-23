@@ -25,9 +25,12 @@ WIND_LOAD_MAP = {
 
 def compute_composite_risk(row, snotel_data):
     base_risk = row.get("terrain_risk_score", 1)
+    elev_ft = row.get("elevation_ft", 0)
+    slope = row.get("slope_deg", 0)
     
-    # If there is no avalanche terrain (slope < 25), risk stays 1 or low regardless of weather (typically)
-    # But we'll follow prompt rules: start with terrain score, add bumps, cap at 5.
+    if slope < 25:
+        return 1
+        
     risk = int(base_risk)
     
     # Extract weather trends

@@ -14,14 +14,14 @@ import sys
 
 # Bounds defined by the prompt
 BOUNDS = {
-    "south": 41.00,
-    "north": 41.45,
-    "west": -106.75,
+    "south": 41.05,
+    "north": 41.40,
+    "west": -106.50,
     "east": -106.10,
 }
 
 CELL_SIZE_M = 500
-MIN_ELEVATION_FT = 9500
+HARD_BORDER_ELEVATION_FT = 8200
 
 NORTH_ASPECTS = ["N", "NE", "NW"]
 
@@ -147,16 +147,21 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
             x, y = transform * (c, r)
             
             elev_m = float(np.nanmean(block_elev))
+            if np.isnan(elev_m):
+                continue
             elev_ft = meters_to_feet(elev_m)
             
-            if elev_ft < MIN_ELEVATION_FT:
-                continue
+            with np.errstate(all='ignore'):
+                max_elev_m = float(np.nanmax(block_elev))
+                if meters_to_feet(max_elev_m) < HARD_BORDER_ELEVATION_FT:
+                    continue
+                slp = float(np.nanmax(block_slope)) # Max slope for SAR worst-case
+                asp = float(np.nanmean(block_aspect))
             
-            slp = float(np.nanmax(block_slope)) # Max slope for SAR worst-case
-            asp = float(np.nanmean(block_aspect))
-            
-            if np.isnan(slp) or np.isnan(asp):
-                continue
+            if np.isnan(slp):
+                slp = 0.0
+            if np.isnan(asp):
+                asp = 0.0
                 
             cell_id += 1
             cardinal = degrees_to_cardinal(asp)
@@ -226,6 +231,9 @@ def main():
     print(f"\nAvalanche terrain (30-45°): {df.avy_slope.sum()} cells")
     print("\nTerrain Risk Score breakdown:")
     print(df.terrain_risk_score.value_counts().sort_index())
+    
+    footprint_sq_km = len(df) * (CELL_SIZE_M * CELL_SIZE_M) / 1_000_000
+    print(f"\nTotal footprint area: {footprint_sq_km:.2f} sq km")
     
     df.to_csv(args.output, index=False)
     print(f"Saved {args.output}")
