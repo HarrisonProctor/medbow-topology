@@ -14,10 +14,10 @@ import sys
 
 # Bounds defined by the prompt
 BOUNDS = {
-    "south": 41.05,
-    "north": 41.40,
-    "west": -106.50,
-    "east": -106.10,
+    "south": 41.00,
+    "north": 41.50,
+    "west": -106.60,
+    "east": -106.05,
 }
 
 CELL_SIZE_M = 500
