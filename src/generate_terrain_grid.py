@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Snowy Range Terrain Grid Generator (500 m cells)
-=================================================
+Medicine Bow / Snowy Range Terrain Grid Generator (750 m cells)
+===============================================================
 Generates a CSV of terrain grid cells for avalanche risk assessment.
-Produces a clean mountain-only footprint suitable for choropleth rendering
-in Palantir Foundry — no plains, no valley floors, no visual noise.
+Produces a clean mountain-only footprint (including Elk Mountain) suitable
+for choropleth rendering in Palantir Foundry — no plains, no valley floors,
+no visual noise.
 
 Pipeline:
   1. Load USGS 1/3 arc-second DEM tiles and mosaic.
-  2. Lay a 500 m grid; for each cell compute elevation, slope (MAX), aspect.
+  2. Lay a 750 m grid; for each cell compute elevation, slope (MAX), aspect.
   3. Reject cells whose center falls outside the user-drawn boundary polygon.
-  4. Reject cells below the elevation cutoff (default 7 800 ft).
+  4. Reject cells below the elevation cutoff (default 7,800 ft).
   5. Remove small disconnected clusters (< 5 cells) for clean edges.
   6. Assign avalanche risk scores and Foundry-ready geometries.
 
@@ -19,7 +20,7 @@ Dependencies:
 
 Usage:
   python generate_terrain_grid.py \\
-      --dem data/dem/USGS_13_n42w107*.tif \\
+      --dem data/dem/USGS_13_n42w107*.tif data/dem/USGS_13_n41w107*.tif \\
       --output data/snowy_range_terrain_grid.csv
 """
 
@@ -28,19 +29,29 @@ import glob
 import json
 import os
 import sys
+from collections import Counter
 
 import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.merge import merge
-from shapely.geometry import Point, Polygon, shape
+from shapely.geometry import Point, Polygon
 
 # ── Boundary polygon (user-drawn, clamped to 41.00°N on the south) ──────────
-# Vertices are (lat, lon); we clamp any lat < 41.00 to 41.00.
+# Vertices are (lat, lon).  Expanded to include Elk Mountain (summit at
+# 41.6332°N, 106.5262°W, 11,162 ft) and surrounding slopes.  Any lat < 41.00
+# is clamped to 41.00 (WY/CO border).
 _RAW_BOUNDARY = [
     (41.0068, -106.4072),
     (41.2452, -106.6315),
     (41.5883, -106.6498),
+    # ── Elk Mountain extension: push north and west to capture
+    #    the full Elk Mountain massif and connecting ridgeline
+    (41.6900, -106.6500),
+    (41.7200, -106.5800),
+    (41.7200, -106.4500),
+    (41.6800, -106.3500),
+    # ── reconnect to original polygon
     (41.6321, -106.2662),
     (41.4904, -106.0126),
     (41.2631, -105.9302),
@@ -56,7 +67,7 @@ BOUNDARY_POLY = Polygon([
 ])
 
 # ── Tunable constants ────────────────────────────────────────────────────────
-CELL_SIZE_M = 500
+CELL_SIZE_M = 750
 ELEV_CUTOFF_FT = 7_800          # minimum elevation to keep
 MIN_CLUSTER_SIZE = 5             # drop clusters smaller than this
 NORTH_ASPECTS = {"N", "NE", "NW"}
@@ -207,11 +218,13 @@ def remove_small_clusters(df: pd.DataFrame, min_size: int) -> pd.DataFrame:
                     stack.append(nb)
 
     # Count cluster sizes
-    from collections import Counter
     cluster_sizes = Counter(labels.values())
 
     keep_labels = {lid for lid, cnt in cluster_sizes.items() if cnt >= min_size}
-    mask = df.apply(lambda row: labels.get((row["_gr"], row["_gc"]), 0) in keep_labels, axis=1)
+    mask = df.apply(
+        lambda row: labels.get((row["_gr"], row["_gc"]), 0) in keep_labels,
+        axis=1,
+    )
     return df[mask].copy()
 
 
@@ -220,7 +233,7 @@ def remove_small_clusters(df: pd.DataFrame, min_size: int) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 def cell_geojson(lon_center: float, lat_center: float,
                  half_dx_deg: float, half_dy_deg: float) -> str:
-    """Return a GeoJSON Polygon string for a 500 m square cell."""
+    """Return a GeoJSON Polygon string for a 750 m square cell."""
     w = lon_center - half_dx_deg
     e = lon_center + half_dx_deg
     s = lat_center - half_dy_deg
@@ -234,7 +247,7 @@ def cell_geojson(lon_center: float, lat_center: float,
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_grid(dem, transform, crs, nodata, slope, aspect):
     """
-    Walk the DEM in 500 m steps, apply polygon + elevation + cluster filters,
+    Walk the DEM in 750 m steps, apply polygon + elevation + cluster filters,
     and return a DataFrame ready for Foundry.
     """
     inv = ~transform               # pixel ↔ geographic coordinate transform
@@ -251,7 +264,7 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
     row_n = max(0, int(row_n))
     row_s = min(dem.shape[0] - 1, int(row_s))
 
-    # Pixel steps for 500 m cells
+    # Pixel steps for 750 m cells
     lat_mid = (b_south + b_north) / 2
     px_m_x = abs(transform[0]) * 111_320 * np.cos(np.radians(lat_mid))
     px_m_y = abs(transform[4]) * 110_540
@@ -266,24 +279,31 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
     half_dx_deg = abs(transform[0]) * half_x
     half_dy_deg = abs(transform[4]) * half_y
 
-    rows = []
+    rows_data = []
     grid_row = -1
+
+    total_checked = 0
+    poly_rejected = 0
+    elev_rejected = 0
 
     for r in range(row_n, row_s, step_y):
         grid_row += 1
         grid_col = -1
         for c in range(col_w, col_e, step_x):
             grid_col += 1
+            total_checked += 1
 
             # ── Cell centre in geographic coordinates ────────────────────
             lon, lat = transform * (c, r)
 
             # ── 1) Polygon test ──────────────────────────────────────────
             if not BOUNDARY_POLY.contains(Point(lon, lat)):
+                poly_rejected += 1
                 continue
 
             # ── 2) Clamp at WY/CO border ─────────────────────────────────
             if lat < WY_CO_BORDER:
+                poly_rejected += 1
                 continue
 
             # ── Extract the DEM block for this cell ──────────────────────
@@ -316,6 +336,7 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
 
                 # 3) Elevation cutoff
                 if elev_ft < ELEV_CUTOFF_FT:
+                    elev_rejected += 1
                     continue
 
                 slp = float(np.nanmax(blk_slope))   # MAX slope for SAR
@@ -331,7 +352,7 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
             band = classify_band(elev_ft)
             risk = terrain_risk(slp, cardinal, elev_ft)
 
-            rows.append({
+            rows_data.append({
                 "lat":            round(lat, 6),
                 "lon":            round(lon, 6),
                 "elevation_ft":   round(elev_ft, 0),
@@ -349,7 +370,12 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
                 "_gc":            grid_col,
             })
 
-    df = pd.DataFrame(rows)
+    print(f"  Grid scan: {total_checked:,} positions checked")
+    print(f"    Outside polygon: {poly_rejected:,}")
+    print(f"    Below {ELEV_CUTOFF_FT:,} ft:  {elev_rejected:,}")
+    print(f"    Passed filters:  {len(rows_data):,}")
+
+    df = pd.DataFrame(rows_data)
     if df.empty:
         return df
 
@@ -371,10 +397,11 @@ def generate_grid(dem, transform, crs, nodata, slope, aspect):
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    global ELEV_CUTOFF_FT, MIN_CLUSTER_SIZE
+    global ELEV_CUTOFF_FT, MIN_CLUSTER_SIZE, CELL_SIZE_M
 
     parser = argparse.ArgumentParser(
-        description="Generate 500 m terrain grid (mountain-only) for the Snowy Range"
+        description="Generate 750 m terrain grid (mountain-only) for the "
+                    "Medicine Bow / Snowy Range including Elk Mountain"
     )
     parser.add_argument("--dem", nargs="+", required=True,
                         help="Path(s) to USGS 1/3 arc-second DEM GeoTIFF(s)")
@@ -384,10 +411,13 @@ def main():
                         help="Elevation cutoff in feet (default 7800)")
     parser.add_argument("--min-cluster", type=int, default=MIN_CLUSTER_SIZE,
                         help="Min connected cells to keep (default 5)")
+    parser.add_argument("--cell-size", type=int, default=CELL_SIZE_M,
+                        help="Cell size in metres (default 750)")
     args = parser.parse_args()
 
     ELEV_CUTOFF_FT = args.elev_cutoff
     MIN_CLUSTER_SIZE = args.min_cluster
+    CELL_SIZE_M = args.cell_size
 
     # ── Resolve DEM paths (support glob patterns) ────────────────────────
     dem_files = []
@@ -417,12 +447,13 @@ def main():
 
     # ── Summary ──────────────────────────────────────────────────────────
     area_km2 = len(df) * (CELL_SIZE_M ** 2) / 1_000_000
-    print("\n" + "=" * 56)
-    print("  SNOWY RANGE TERRAIN GRID - SUMMARY")
-    print("=" * 56)
+    print("\n" + "=" * 60)
+    print("  MEDICINE BOW / SNOWY RANGE TERRAIN GRID — SUMMARY")
+    print("=" * 60)
+    print(f"  Cell size:          {CELL_SIZE_M} m × {CELL_SIZE_M} m")
     print(f"  Total cells:        {len(df):,}")
     print(f"  Approximate area:   {area_km2:,.1f} sq km")
-    print(f"  Elevation range:    {df.elevation_ft.min():,.0f} - "
+    print(f"  Elevation range:    {df.elevation_ft.min():,.0f} – "
           f"{df.elevation_ft.max():,.0f} ft")
     print(f"  Elevation cutoff:   {ELEV_CUTOFF_FT:,} ft")
     print()
@@ -440,11 +471,11 @@ def main():
     print()
     avy = df.avy_slope.sum()
     north = df.north_facing.sum()
-    print(f"  Avalanche terrain (30-45 deg):  {avy:,} cells "
+    print(f"  Avalanche terrain (30–45°):  {avy:,} cells "
           f"({avy / len(df) * 100:.1f}%)")
     print(f"  North-facing cells:          {north:,} cells "
           f"({north / len(df) * 100:.1f}%)")
-    print("=" * 56)
+    print("=" * 60)
 
     df.to_csv(args.output, index=False)
     print(f"\nSaved -> {args.output}  ({os.path.getsize(args.output) / 1_048_576:.1f} MB)")
