@@ -1,6 +1,9 @@
 # DEM folders and large raster files
-dem/
+data/dem/
 *.tif
+
+# Large CSV data files (optional — uncomment to track)
+# data/*.csv
 
 # Temporary scripts and logs
 test_api.py
